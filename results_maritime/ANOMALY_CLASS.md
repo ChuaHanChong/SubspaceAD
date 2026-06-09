@@ -2,7 +2,7 @@
 
 Applies SubspaceAD (DINOv2 + PCA reconstruction residual) to image-level OOD detection: 17 in-dist ship classes vs 4 OOD ship classes. The original `main.py` is untouched — all OOD logic lives in new files.
 
-> **This document is method-only.** All quantitative results (clean baselines, ablations, threshold/balanced analysis, degradation robustness, continual backbone, fusion) are in **`REPORT.md`**. Run commands are in **`../COMMAND.md`**.
+> **This document is method-only.** All quantitative results (original baselines, ablations, threshold/balanced analysis, degradation robustness, continual backbone, fusion) are in **`REPORT.md`**. Run commands are in **`../COMMAND.md`**.
 
 ## Adaptation Summary
 

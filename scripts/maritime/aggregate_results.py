@@ -10,9 +10,9 @@ ROOT = Path("/home/hcchua/SubspaceAD/results_maritime/grids")
 
 # Filename pattern: grid_{dataset}_{size}_{layer}_{agg}_EV{nnnn}_{score}_dk{k}
 # dataset alternation lists longer prefixes first so e.g. "irdeg" is not
-# shadowed by "ir". Original model: rgb, ir (clean), irX (fit-clean/eval-deg),
+# shadowed by "ir". Base model: rgb, ir (original), irX (fit-original/eval-deg),
 # irdeg (deg/deg), rgbir (pooled). Continual model adds the *cont variants:
-# ircont (clean/clean), irXcont (fit-clean/eval-deg), irdegcont (deg/deg).
+# ircont (original/original), irXcont (fit-original/eval-deg), irdegcont (deg/deg).
 PATTERN = re.compile(
     r"^grid_(?P<dataset>rgbir|irdegcont|irXcont|ircont|irdeg|irX|rgb|ir)_(?P<size>\d+)"
     r"_(?P<layer>L1|L2|L4|L6|L8|L12|L18|Lmid)"
@@ -174,12 +174,12 @@ def main():
         print("=" * 78)
         print("=== Cross-experiment summary (each at its own val-best config) ===")
         print("=" * 78)
-        label = {"rgb": "RGB (clean)", "ir": "IR (clean)",
-                 "irX": "IR clean→deg [orig]", "irdeg": "IR deg→deg [orig]",
-                 "rgbir": "RGB∪IR pooled [orig]",
-                 "ircont": "IR clean→clean [continual]",
-                 "irXcont": "IR clean→deg [continual]",
-                 "irdegcont": "IR deg→deg [continual]"}
+        label = {"rgb": "Base · RGB · original→original", "ir": "Base · IR · original→original",
+                 "irX": "Base · IR · original→degraded", "irdeg": "Base · IR · degraded→degraded",
+                 "rgbir": "Base · RGB+IR pooled · original→original",
+                 "ircont": "Continual · IR · original→original",
+                 "irXcont": "Continual · IR · original→degraded",
+                 "irdegcont": "Continual · IR · degraded→degraded"}
         def _summary(b: dict) -> str:
             return (f"size={b['size']:<5} {b['layer_tag']:<4} agg={b['agg']:<6} "
                     f"EV={b['ev']:.3f} {b['score']:<14} "

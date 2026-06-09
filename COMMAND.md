@@ -1,7 +1,7 @@
 # Commands — Maritime OOD Detection
 
-End-to-end pipeline for SubspaceAD on the maritime vessel datasets, across two backbones
-(original RGB-pretrained + continual-IR) and three data conditions (clean / degraded / pooled).
+End-to-end pipeline for SubspaceAD on the maritime vessel datasets, across two SSL checkpoints
+(Base: RGB+IR · Continual: degraded-IR) and three data conditions (original / degraded / pooled).
 Scripts live in `scripts/maritime/`; run from repo root (`/home/hcchua/SubspaceAD`).
 Results land in `results_maritime/` (see its `README.md`); feature caches in `/data/hanchong/subspacead_cache/`.
 
@@ -38,18 +38,18 @@ Already-built caches are reused, so re-runs are grid-only (minutes).
 ### Dataset roots
 | Dataset | `--data_root` |
 |---|---|
-| RGB (clean) | `/data/hanchong/images-splitted-3` |
-| IR (clean) | `/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein` |
+| RGB (original) | `/data/hanchong/images-splitted-3` |
+| IR (original) | `/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein` |
 | IR (degraded) | `/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein-degraded` |
 
 ### Caches → experiments
 | Cache | dataset / backbone | feeds |
 |---|---|---|
-| `rgb.npz` | RGB clean / orig | RGB baseline, A3 pool |
-| `ir.npz` | IR clean / orig | IR baseline, A1 fit, A3 pool |
+| `rgb.npz` | RGB original / orig | RGB baseline, A3 pool |
+| `ir.npz` | IR original / orig | IR baseline, A1 fit, A3 pool |
 | `ir_degraded.npz` | IR degraded / orig | A1 eval, A2 |
-| `rgbir_pool.npz` | RGB∪IR clean / orig | A3 |
-| `ir_continual.npz` | IR clean / continual | B0, B1 fit |
+| `rgbir_pool.npz` | RGB∪IR original / orig | A3 |
+| `ir_continual.npz` | IR original / continual | B0, B1 fit |
 | `ir_degraded_continual.npz` | IR degraded / continual | B1 eval, B2 |
 
 ---
@@ -60,7 +60,7 @@ Generic one-cache-per-call driver, parameterized by env vars: `DATA_ROOT`, `OUT_
 (default orig), `GPU` (default 0), `CHECK_DEGRADED` (1 = assert degraded root complete first).
 
 ```bash
-# clean IR, continual backbone  → ir_continual.npz  (GPU 1)
+# original IR, continual backbone  → ir_continual.npz  (GPU 1)
 DATA_ROOT=/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein \
 CKPT=…/ViT-L-16-Continual-IR/eval/training_51199/teacher_checkpoint.pth \
 OUT_NAME=ir_continual.npz GPU=1 bash scripts/maritime/dump_chain.sh
@@ -76,7 +76,7 @@ OUT_NAME=ir_degraded_continual.npz GPU=2 CHECK_DEGRADED=1 bash scripts/maritime/
 ```
 
 Each call runs the 5 fit sizes incrementally (100→10000) + val/test once, all 24 CLS layers.
-The clean `rgb.npz` / `ir.npz` use the same driver with `CKPT`=orig on the clean roots —
+The original `rgb.npz` / `ir.npz` use the same driver with `CKPT`=orig on the original roots —
 `run_all.sh` builds all six caches (skip-if-present) automatically.
 
 ## Step 2 — Pool for fusion (`fuse_pool_features.py`)
@@ -88,7 +88,7 @@ python scripts/maritime/fuse_pool_features.py        # rgb.npz + ir.npz → rgbi
 ## Step 3 — Hyperparameter grid (`anomaly_detection.py`)
 
 One experiment = 5 sizes × 1920 configs. `--eval_cache_file` makes fit and eval come from
-different caches (cross-domain). Example, A1 (fit clean IR, eval degraded IR), size 5000, GPU 0:
+different caches (cross-domain). Example, A1 (fit original IR, eval degraded IR), size 5000, GPU 0:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/maritime/anomaly_detection.py \

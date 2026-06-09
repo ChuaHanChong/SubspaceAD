@@ -130,7 +130,7 @@ def main():
     p.add_argument("--eval_cache_file", type=Path, default=None,
                    help="optional .npz supplying val/test features + labels. "
                         "Defaults to --feature_cache_file. Set this to fit on one "
-                        "dataset and evaluate on another (e.g. fit clean IR, "
+                        "dataset and evaluate on another (e.g. fit original IR, "
                         "eval degraded IR). Must share depth/positives_sorted.")
     p.add_argument("--data_root", required=True,
                    help="dataset root; used to re-glob the subset paths for slicing")

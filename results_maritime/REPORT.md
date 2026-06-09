@@ -13,11 +13,11 @@ Both are the **same ViT-L/16 architecture** — only the SSL checkpoint differs:
 
 | Variant | Checkpoint | SSL pretraining |
 |---|---|---|
-| **Base** | `ViT-L-16/eval/training_2348399` | self-supervised on **clean RGB + IR** |
+| **Base** | `ViT-L-16/eval/training_2348399` | self-supervised on **original RGB + IR** |
 | **Continual** | `ViT-L-16-Continual-IR/eval/training_51199` | **initialized from Base**, then continued SSL on **IR with ESRGAN degradation mixed in** (`esrgan_prob=0.8`) |
 
 Eval splits (per condition): full test = 1700 ID + 400 OOD; balanced test = 400 ID + 400 OOD (20-seed,
-val-derived threshold held fixed). "clean→degraded" = PCA fit on clean images, evaluated on degraded;
+val-derived threshold held fixed). "original→degraded" = PCA fit on original images, evaluated on degraded;
 "degraded→degraded" = fit and evaluated on degraded. Pooled = RGB and IR treated as separate samples
 under one PCA. Artifacts (this folder): `grid_summary_all.csv` (66,709 configs), `best_per_experiment.csv`,
 `balanced_test.csv`.
@@ -46,16 +46,16 @@ The anomaly score is the **residual energy in the complementary directions** —
 
 | Experiment | agg · layers | D | EV | pca_k | drop_k | **k_eff = pca_k − dk** |
 |:--|:--|--:|--:|--:|--:|--:|
-| **Base** — RGB · clean→clean | concat · L2 | 2048 | 0.50 | 128 | 20 | **108** |
-| **Base** — IR · clean→clean | concat · L2 | 2048 | 0.50 | 126 | 50 | **76** |
-| **Base** — IR · clean→degraded | concat · L8 | 8192 | 0.70 | 211 | 50 | **161** |
+| **Base** — RGB · original→original | concat · L2 | 2048 | 0.50 | 128 | 20 | **108** |
+| **Base** — IR · original→original | concat · L2 | 2048 | 0.50 | 126 | 50 | **76** |
+| **Base** — IR · original→degraded | concat · L8 | 8192 | 0.70 | 211 | 50 | **161** |
 | **Base** — IR · degraded→degraded | mean · L4 | 1024 | 0.99 | 768 | 5 | **763** |
-| **Base** — RGB+IR pooled · clean→clean | concat · L2 | 2048 | 0.50 | 131 | 50 | **81** |
-| **Continual** — IR · clean→clean | concat · L6 | 6144 | 0.99 | 954 | 0 | **954** |
-| **Continual** — IR · clean→degraded | concat · L8 | 8192 | 0.70 | 189 | 5 | **184** |
+| **Base** — RGB+IR pooled · original→original | concat · L2 | 2048 | 0.50 | 131 | 50 | **81** |
+| **Continual** — IR · original→original | concat · L6 | 6144 | 0.99 | 954 | 0 | **954** |
+| **Continual** — IR · original→degraded | concat · L8 | 8192 | 0.70 | 189 | 5 | **184** |
 | **Continual** — IR · degraded→degraded | concat · L6 | 6144 | 0.99 | 970 | 0 | **970** |
 
-**Worked example** — RGB · clean→clean (`concat · L2`, EV=0.50, drop_k=20):
+**Worked example** — RGB · original→original (`concat · L2`, EV=0.50, drop_k=20):
 `D = 2 × 1024 = 2048`. PCA eigenvalues have no dominant direction (top = 1.57% of variance); walking
 the cumulative ratio `cumvar(127)=0.4998 (<0.50) → cumvar(128)=0.5021 (≥0.50)` gives **pca_k = 128**.
 Dropping the top 20 leaves **k_eff = 108** components reconstructing “normal”; the score is the residual
@@ -72,25 +72,25 @@ their IR-adapted features spread discriminative variance across a much higher-ra
 
 | Experiment | size | layers | agg | EV | score | dk | val AUROC ↑ | test AUROC ↑ | test AUPR ↑ | bal AUROC ↑ | bal AUPR ↑ |
 |:--|--:|:--|:--|--:|:--|--:|--:|--:|--:|--:|--:|
-| RGB · clean→clean | 10000 | L2 | concat | 0.5 | reconstruction | 20 | 0.8664 | 0.8773 | 0.5440 | 0.8793±0.0087 | 0.8347±0.0159 |
-| IR · clean→clean | 10000 | L2 | concat | 0.5 | reconstruction | 50 | 0.8340 | 0.8217 | 0.4259 | 0.8276±0.0101 | 0.7671±0.0156 |
-| IR · clean→degraded | 10000 | L8 | concat | 0.7 | reconstruction | 50 | 0.7155 | 0.7104 | 0.3175 | 0.7129±0.0141 | 0.6664±0.0165 |
+| RGB · original→original | 10000 | L2 | concat | 0.5 | reconstruction | 20 | 0.8664 | 0.8773 | 0.5440 | 0.8793±0.0087 | 0.8347±0.0159 |
+| IR · original→original | 10000 | L2 | concat | 0.5 | reconstruction | 50 | 0.8340 | 0.8217 | 0.4259 | 0.8276±0.0101 | 0.7671±0.0156 |
+| IR · original→degraded | 10000 | L8 | concat | 0.7 | reconstruction | 50 | 0.7155 | 0.7104 | 0.3175 | 0.7129±0.0141 | 0.6664±0.0165 |
 | IR · degraded→degraded | 1000 | L4 | mean | 0.99 | reconstruction | 5 | 0.5932 | 0.5878 | 0.2388 | 0.5882±0.0104 | 0.5676±0.0107 |
-| RGB+IR pooled · clean→clean | 10000 | L2 | concat | 0.5 | reconstruction | 50 | 0.8544 | 0.8547 | 0.5021 | 0.8558±0.0066 | 0.8042±0.0107 |
+| RGB+IR pooled · original→original | 10000 | L2 | concat | 0.5 | reconstruction | 50 | 0.8544 | 0.8547 | 0.5021 | 0.8558±0.0066 | 0.8042±0.0107 |
 
 ### Balanced-test detail (400 ID + 400 OOD, 20-seed mean)
 
 | Experiment | accuracy ↑ | OOD precision ↑ | OOD recall ↑ | OOD F1 ↑ |
 |:--|--:|--:|--:|--:|
-| RGB · clean→clean | 0.7904 | 0.7983 | 0.7775 | 0.7877 |
-| IR · clean→clean | 0.7583 | 0.7204 | 0.8450 | 0.7777 |
-| IR · clean→degraded | 0.6558 | 0.6153 | 0.8325 | 0.7076 |
+| RGB · original→original | 0.7904 | 0.7983 | 0.7775 | 0.7877 |
+| IR · original→original | 0.7583 | 0.7204 | 0.8450 | 0.7777 |
+| IR · original→degraded | 0.6558 | 0.6153 | 0.8325 | 0.7076 |
 | IR · degraded→degraded | 0.5748 | 0.5844 | 0.5200 | 0.5502 |
-| RGB+IR pooled · clean→clean | 0.7787 | 0.7581 | 0.8187 | 0.7872 |
+| RGB+IR pooled · original→original | 0.7787 | 0.7581 | 0.8187 | 0.7872 |
 
 ### Size sweep
 
-| fit size | RGB · clean→clean | IR · clean→clean | IR · clean→degraded | IR · degraded→degraded | RGB+IR pooled · clean→clean |
+| fit size | RGB · original→original | IR · original→original | IR · original→degraded | IR · degraded→degraded | RGB+IR pooled · original→original |
 |--:|--:|--:|--:|--:|--:|
 | 100 | 0.838 / 0.857 | 0.817 / 0.822 | 0.699 / 0.702 | 0.585 / 0.579 | 0.821 / 0.834 |
 | 500 | 0.861 / 0.865 | 0.821 / 0.823 | 0.709 / 0.712 | 0.592 / 0.587 | 0.846 / 0.849 |
@@ -104,7 +104,7 @@ _(val / test AUROC; val-best config at each fit size)_
 
 _Each table varies one axis; all other hyperparameters held at the experiment's val-best (listed per table). Cells = val / test AUROC._
 
-**RGB · clean→clean**
+**RGB · original→original**
 
 _Vary **Layer** · fixed: size=10000 · agg=concat · EV=0.5 · score=reconstruction · drop_k=20_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | L18 | Lmid |
@@ -131,7 +131,7 @@ _Vary **drop_k** · fixed: size=10000 · layers=L2 · agg=concat · EV=0.5 · sc
 | test AUROC | 0.816 | 0.852 | 0.877 | 0.865 | 0.841 |
 
 
-**IR · clean→clean**
+**IR · original→original**
 
 _Vary **Layer** · fixed: size=10000 · agg=concat · EV=0.5 · score=reconstruction · drop_k=50_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | L18 | Lmid |
@@ -158,7 +158,7 @@ _Vary **drop_k** · fixed: size=10000 · layers=L2 · agg=concat · EV=0.5 · sc
 | test AUROC | 0.776 | 0.784 | 0.808 | 0.822 | 0.810 |
 
 
-**IR · clean→degraded**
+**IR · original→degraded**
 
 _Vary **Layer** · fixed: size=10000 · agg=concat · EV=0.7 · score=reconstruction · drop_k=50_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | L18 | Lmid |
@@ -212,7 +212,7 @@ _Vary **drop_k** · fixed: size=1000 · layers=L4 · agg=mean · EV=0.99 · scor
 | test AUROC | 0.479 | 0.588 | 0.533 | 0.587 | 0.580 |
 
 
-**RGB+IR pooled · clean→clean**
+**RGB+IR pooled · original→original**
 
 _Vary **Layer** · fixed: size=10000 · agg=concat · EV=0.5 · score=reconstruction · drop_k=50_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | L18 | Lmid |
@@ -245,21 +245,21 @@ _Vary **drop_k** · fixed: size=10000 · layers=L2 · agg=concat · EV=0.5 · sc
 
 | Experiment | size | layers | agg | EV | score | dk | val AUROC ↑ | test AUROC ↑ | test AUPR ↑ | bal AUROC ↑ | bal AUPR ↑ |
 |:--|--:|:--|:--|--:|:--|--:|--:|--:|--:|--:|--:|
-| IR · clean→clean | 5000 | L6 | concat | 0.99 | reconstruction | 0 | 0.8703 | 0.8814 | 0.5784 | 0.8820±0.0077 | 0.8458±0.0153 |
-| IR · clean→degraded | 1000 | L8 | concat | 0.7 | reconstruction | 5 | 0.8371 | 0.8358 | 0.5104 | 0.8358±0.0100 | 0.8067±0.0159 |
+| IR · original→original | 5000 | L6 | concat | 0.99 | reconstruction | 0 | 0.8703 | 0.8814 | 0.5784 | 0.8820±0.0077 | 0.8458±0.0153 |
+| IR · original→degraded | 1000 | L8 | concat | 0.7 | reconstruction | 5 | 0.8371 | 0.8358 | 0.5104 | 0.8358±0.0100 | 0.8067±0.0159 |
 | IR · degraded→degraded | 5000 | L6 | concat | 0.99 | reconstruction | 0 | 0.8516 | 0.8600 | 0.5074 | 0.8608±0.0092 | 0.8091±0.0176 |
 
 ### Balanced-test detail (400 ID + 400 OOD, 20-seed mean)
 
 | Experiment | accuracy ↑ | OOD precision ↑ | OOD recall ↑ | OOD F1 ↑ |
 |:--|--:|--:|--:|--:|
-| IR · clean→clean | 0.8086 | 0.8364 | 0.7675 | 0.8005 |
-| IR · clean→degraded | 0.7425 | 0.7683 | 0.6950 | 0.7297 |
+| IR · original→original | 0.8086 | 0.8364 | 0.7675 | 0.8005 |
+| IR · original→degraded | 0.7425 | 0.7683 | 0.6950 | 0.7297 |
 | IR · degraded→degraded | 0.7925 | 0.7637 | 0.8475 | 0.8034 |
 
 ### Size sweep
 
-| fit size | IR · clean→clean | IR · clean→degraded | IR · degraded→degraded |
+| fit size | IR · original→original | IR · original→degraded | IR · degraded→degraded |
 |--:|--:|--:|--:|
 | 100 | 0.821 / 0.821 | 0.802 / 0.800 | 0.775 / 0.769 |
 | 500 | 0.869 / 0.879 | 0.833 / 0.832 | 0.850 / 0.853 |
@@ -273,7 +273,7 @@ _(val / test AUROC; val-best config at each fit size)_
 
 _Each table varies one axis; all other hyperparameters held at the experiment's val-best (listed per table). Cells = val / test AUROC._
 
-**IR · clean→clean**
+**IR · original→original**
 
 _Vary **Layer** · fixed: size=5000 · agg=concat · EV=0.99 · score=reconstruction · drop_k=0_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | L18 | Lmid |
@@ -300,7 +300,7 @@ _Vary **drop_k** · fixed: size=5000 · layers=L6 · agg=concat · EV=0.99 · sc
 | test AUROC | 0.881 | 0.702 | 0.581 | 0.560 | 0.605 |
 
 
-**IR · clean→degraded**
+**IR · original→degraded**
 
 _Vary **Layer** · fixed: size=1000 · agg=concat · EV=0.7 · score=reconstruction · drop_k=5 · L18 concat rank-deficient — omitted_
 | Layer | L1 | L2 | L4 | L6 | L8 | L12 | Lmid |
@@ -361,14 +361,14 @@ toward chance on degraded data.
 
 | IR scenario | Base test AUROC | Continual test AUROC | Δ |
 |:--|--:|--:|--:|
-| clean → clean | 0.8217 | **0.8814** | +0.060 |
-| clean → degraded | 0.7104 | **0.8358** | **+0.125** |
+| original → original | 0.8217 | **0.8814** | +0.060 |
+| original → degraded | 0.7104 | **0.8358** | **+0.125** |
 | degraded → degraded | 0.5878 | **0.8600** | **+0.272** |
 
 Balanced AUROC tells the same story (0.828 / 0.713 / 0.588 vs 0.882 / 0.836 / 0.861).
 
-**Fusion (RGB∪IR pooled, base backbone)**: test AUROC **0.8547** — above clean IR (0.8217),
-just below clean RGB (0.8773). One PCA subspace serves both modalities without per-modality tuning.
+**Fusion (RGB∪IR pooled, base backbone)**: test AUROC **0.8547** — above original IR (0.8217),
+just below original RGB (0.8773). One PCA subspace serves both modalities without per-modality tuning.
 
 ## Findings
 
