@@ -144,14 +144,11 @@ class FeatureExtractor:
         docrop: bool = False,
         use_clahe: bool = False,
         dino_saliency_layer: int = 0,
+        token_type: str = "patch",
     ):
-        """
-        Extracts, aggregates features, and computes saliency from a batch of images.
+        """Returns (tokens, (h_p, w_p), saliency).
 
-        Returns:
-            - fused_tokens (np.ndarray): The aggregated patch features.
-            - grid_size (tuple): The (height, width) of the patch grid.
-            - saliency_mask (np.ndarray): The DINO saliency mask.
+        token_type: "patch" → spatial grid; "cls" → [B, 1, 1, C], zero saliency.
         """
 
         # 1. Preprocessing
@@ -197,7 +194,20 @@ class FeatureExtractor:
         n_expected = h_p * w_p
         batch_size = inputs.pixel_values.shape[0]
 
-        # 4. Saliency Mask Extraction
+        # 4. CLS-token branch — short-circuit before patch-grid logic.
+        if token_type == "cls":
+            cls_per_layer = [hidden_states[li][:, 0, :] for li in layers]  # [B, D] each
+            if agg_method == "mean":
+                fused = torch.stack(cls_per_layer, dim=0).mean(dim=0)
+            elif agg_method == "concat":
+                fused = torch.cat(cls_per_layer, dim=-1)
+            else:
+                raise ValueError(f"agg_method={agg_method} not supported for CLS (mean/concat only)")
+            fused = fused.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, C]
+            saliency = np.zeros((batch_size, 1, 1), dtype=np.float32)
+            return fused.cpu().numpy(), (1, 1), saliency
+
+        # 5. Saliency Mask Extraction (patch path only)
         saliency_mask = self._get_saliency_mask(
             attentions,
             dino_saliency_layer,
@@ -209,7 +219,7 @@ class FeatureExtractor:
             w_p,
         )
 
-        # 5. Feature Aggregation
+        # 6. Feature Aggregation (patch path)
         fused_tokens = self._aggregate_layers(
             hidden_states,
             layers,
