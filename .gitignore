@@ -1,3 +1,4 @@
 **/__pycache__
 results_maritime/grids
-results_maritime/*csv
+results_maritime/tables
+results_maritime/logs

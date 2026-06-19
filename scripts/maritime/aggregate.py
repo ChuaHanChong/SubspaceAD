@@ -1,13 +1,38 @@
-"""Summarize the grid (~19200 configs): val-best per dataset + per-axis slices + optional CSV."""
+"""Aggregate maritime / Infiray / HF grid result dirs.
 
+Merges the former `pick_best.py` (generic val-best per group) and
+`aggregate_results.py` (full grid dump + per-axis slice report) into one CLI.
+
+Modes:
+  default  val-best (max val.auroc) per GROUP, where group = dir name with the
+           trailing config tag stripped. Reads each dir's metrics.json 'config'.
+  --all    one row per config (full grid dump, reproduces grid_summary_all.csv).
+  --detail per-axis slice report to stdout (val-best config + per-axis slices).
+
+Examples:
+  python aggregate.py --pattern 'grid_infiray_*' --csv results_maritime/tables/infiray_grid_best.csv
+  python aggregate.py --pattern 'grid_*' --all --csv results_maritime/tables/grid_summary_all.csv
+  python aggregate.py --pattern 'grid_*' --detail
+"""
 import argparse
 import csv
+import fnmatch
 import json
 import re
 from pathlib import Path
 
 ROOT = Path("/home/hcchua/SubspaceAD/results_maritime/grids")
 
+# --- val-best-per-group (from pick_best.py) -------------------------------
+# Trailing config tag: _<layer>_<m|c>_EV####_<score>_dk#
+TAG = re.compile(r"_(?:L\d+|Lmid)_[mc]_EV\d{4}_(?:rec|mah|cos|euc)_dk\d+$")
+
+
+def group_of(name: str) -> str:
+    return TAG.sub("", name)
+
+
+# --- full grid dump (from aggregate_results.py) ---------------------------
 # Filename pattern: grid_{dataset}_{size}_{layer}_{agg}_EV{nnnn}_{score}_dk{k}
 # dataset alternation lists longer prefixes first so e.g. "irdeg" is not
 # shadowed by "ir". Base model: rgb, ir (original), irX (fit-original/eval-deg),
@@ -25,11 +50,64 @@ SCORE_LONG = {"rec": "reconstruction", "mah": "mahalanobis",
               "cos": "cosine", "euc": "euclidean"}
 AGG_LONG = {"m": "mean", "c": "concat"}
 
+AXES = ["size", "layer_tag", "agg", "ev", "score", "drop_k"]
+LAYER_ORDER = ["L1", "L2", "L4", "L6", "L8", "L12", "L18", "Lmid"]
+SCORE_ORDER = ["reconstruction", "mahalanobis", "cosine", "euclidean"]
+AGG_ORDER = ["mean", "concat"]
 
-def discover_rows(results_root: Path) -> list[dict]:
+
+# ==========================================================================
+# default mode: val-best per group
+# ==========================================================================
+def pick_best_rows(results_root: Path, pattern: str):
+    best = {}  # group -> (val_auroc, row)
+    n = 0
+    for d in sorted(results_root.iterdir()):
+        if not d.is_dir() or not fnmatch.fnmatch(d.name, pattern):
+            continue
+        mj = d / "metrics.json"
+        if not mj.exists():
+            continue
+        data = json.loads(mj.read_text())
+        c = data["config"]
+        g = group_of(d.name)
+        va = data["val"]["auroc"]
+        n += 1
+        if g not in best or va > best[g][0]:
+            best[g] = (va, {
+                "experiment": g, "layer": c["layer_tag"], "agg": c["agg_method"],
+                "ev": c["ev"], "score": c["score_method"], "drop_k": c["drop_k"],
+                "pca_k": data.get("pca_k"),
+                "val_auroc": round(data["val"]["auroc"], 4), "test_auroc": round(data["test"]["auroc"], 4),
+                "val_aupr": round(data["val"]["aupr"], 4), "test_aupr": round(data["test"]["aupr"], 4),
+                "test_fpr95": round(data["test"]["fpr_at_95tpr"], 4),
+            })
+
+    rows = [best[g][1] for g in sorted(best)]
+    return rows, n
+
+
+def run_pick_best(args):
+    rows, n = pick_best_rows(args.results_root, args.pattern)
+    print(f"scanned {n} configs → {len(rows)} groups\n")
+    for r in rows:
+        print(f"  {r['experiment']:<42} {r['layer']:<4} {r['agg']:<6} EV{r['ev']:<5} {r['score']:<14} "
+              f"dk{r['drop_k']:<3} val={r['val_auroc']:.4f} test={r['test_auroc']:.4f}")
+    if args.csv and rows:
+        with open(args.csv, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        print(f"\nwrote {args.csv} ({len(rows)} rows)")
+
+
+# ==========================================================================
+# --all mode: full grid dump
+# ==========================================================================
+def discover_rows(results_root: Path, pattern: str) -> list[dict]:
     rows: list[dict] = []
     for d in sorted(results_root.iterdir()):
         if not d.is_dir():
+            continue
+        if not fnmatch.fnmatch(d.name, pattern):
             continue
         m = PATTERN.match(d.name)
         if not m:
@@ -58,6 +136,21 @@ def discover_rows(results_root: Path) -> list[dict]:
     return rows
 
 
+def write_csv(rows: list[dict], out_path: Path):
+    cols = ["dataset", "size", "layer_tag", "agg", "ev", "score", "drop_k",
+            "val_auroc", "test_auroc", "val_aupr", "test_aupr",
+            "val_fpr95", "test_fpr95", "pca_k", "dirname"]
+    with open(out_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r[k] for k in cols})
+    print(f"wrote {out_path} ({len(rows)} rows)")
+
+
+# ==========================================================================
+# --detail mode: per-axis slice report
+# ==========================================================================
 def _print_axis_summary(rows: list[dict], axis_key: str, axis_label: str, fixed_label: str):
     """Print AUROC per axis value, marking val-best (★) and test-best (▲)."""
     print(f"{axis_label:<14}  {'val_AUROC':>10}  {'test_AUROC':>10}    {fixed_label}")
@@ -69,12 +162,6 @@ def _print_axis_summary(rows: list[dict], axis_key: str, axis_label: str, fixed_
         if r is test_best: mark += " ▲test"
         print(f"  {str(r[axis_key]):<12}  {r['val_auroc']:>10.4f}  {r['test_auroc']:>10.4f}{mark}")
     print()
-
-
-AXES = ["size", "layer_tag", "agg", "ev", "score", "drop_k"]
-LAYER_ORDER = ["L1", "L2", "L4", "L6", "L8", "L12", "L18", "Lmid"]
-SCORE_ORDER = ["reconstruction", "mahalanobis", "cosine", "euclidean"]
-AGG_ORDER = ["mean", "concat"]
 
 
 def _sort_key(axis: str):
@@ -132,30 +219,8 @@ def report_dataset(rows_all: list[dict], dataset: str):
     return val_best
 
 
-def write_csv(rows: list[dict], out_path: Path):
-    cols = ["dataset", "size", "layer_tag", "agg", "ev", "score", "drop_k",
-            "val_auroc", "test_auroc", "val_aupr", "test_aupr",
-            "val_fpr95", "test_fpr95", "pca_k", "dirname"]
-    with open(out_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r[k] for k in cols})
-    print(f"wrote {out_path} ({len(rows)} rows)")
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--results_root", type=Path, default=ROOT)
-    ap.add_argument("--csv", type=Path, default=None, help="optional CSV output of all rows")
-    ap.add_argument("--filter-size", type=int, default=None,
-                    help="limit reporting to one size (e.g. 5000)")
-    args = ap.parse_args()
-
-    rows = discover_rows(args.results_root)
-    if args.filter_size is not None:
-        rows = [r for r in rows if r["size"] == args.filter_size]
-
+def run_detail(args):
+    rows = discover_rows(args.results_root, args.pattern)
     print(f"Discovered {len(rows)} grid-result rows in {args.results_root}\n")
 
     # Report every dataset/experiment present, in a stable, readable order.
@@ -190,6 +255,30 @@ def main():
 
     if args.csv is not None:
         write_csv(rows, args.csv)
+
+
+# ==========================================================================
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pattern", required=True,
+                    help="fnmatch over dir names, e.g. 'grid_infiray_*' or 'grid_*'")
+    ap.add_argument("--results_root", type=Path, default=ROOT)
+    ap.add_argument("--csv", type=Path, default=None)
+    ap.add_argument("--all", action="store_true",
+                    help="one row per config (full grid dump)")
+    ap.add_argument("--detail", action="store_true",
+                    help="per-axis slice report to stdout")
+    args = ap.parse_args()
+
+    if args.detail:
+        run_detail(args)
+    elif args.all:
+        rows = discover_rows(args.results_root, args.pattern)
+        print(f"Discovered {len(rows)} grid-result rows in {args.results_root}\n")
+        if args.csv is not None:
+            write_csv(rows, args.csv)
+    else:
+        run_pick_best(args)
 
 
 if __name__ == "__main__":

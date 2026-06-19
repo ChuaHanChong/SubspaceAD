@@ -23,11 +23,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
-from tqdm import tqdm
 
 from subspacead.core.extractor_local import LocalDinoV2Extractor
 from subspacead.data.maritime import list_fit_paths, list_test_paths, resolve_roots
+
+import _common
+from _common import _sig
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -36,7 +37,23 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LAYER_UNION = list(range(-24, 0))  # -1, -2, ..., -24
 
 
-@torch.no_grad()
+def local_forward(extractor: LocalDinoV2Extractor, positives_sorted, image_res):
+    """Build a forward_batch(pils) -> Tensor[B, depth, D] for the local backbone.
+
+    Preprocesses the PIL batch at `image_res` and runs get_intermediate_layers,
+    stacking the per-layer class tokens.
+    """
+    @torch.no_grad()
+    def forward_batch(pil_imgs):
+        x = extractor._preprocess(pil_imgs, image_res)
+        outs = extractor.model.get_intermediate_layers(
+            x, n=positives_sorted, reshape=False,
+            return_class_token=True, norm=True,
+        )
+        return torch.stack([c for (_p, c) in outs], dim=1)
+    return forward_batch
+
+
 def extract_per_layer_cls(
     extractor: LocalDinoV2Extractor,
     paths: list[str],
@@ -49,39 +66,11 @@ def extract_per_layer_cls(
         else len(extractor.model.blocks)
     )
     positives_sorted = sorted({(li if li >= 0 else depth + li) for li in LAYER_UNION})
-
-    cls_chunks: list[torch.Tensor] = []
-    valid = np.zeros(len(paths), dtype=bool)
-
-    for i in tqdm(range(0, len(paths), batch_size), desc=desc):
-        batch_paths = paths[i : i + batch_size]
-        pil_imgs = []
-        local_idx = []
-        for k, p in enumerate(batch_paths):
-            try:
-                pil_imgs.append(Image.open(p).convert("RGB"))
-                local_idx.append(k)
-            except Exception as e:
-                logging.warning(f"skip unreadable {p}: {e}")
-        if not pil_imgs:
-            continue
-        x = extractor._preprocess(pil_imgs, image_res)
-        outs = extractor.model.get_intermediate_layers(
-            x, n=positives_sorted, reshape=False,
-            return_class_token=True, norm=True,
-        )
-        cls_per_layer = torch.stack([c for (_p, c) in outs], dim=1).cpu()
-        cls_chunks.append(cls_per_layer)
-        for k in local_idx:
-            valid[i + k] = True
-
-    cls_all = torch.cat(cls_chunks, dim=0).numpy().astype(np.float32)
+    cls_all, valid, _secs, _n = _common.extract_per_layer_cls(
+        paths, batch_size, image_res, desc,
+        local_forward(extractor, positives_sorted, image_res),
+    )
     return cls_all, valid
-
-
-def _sig(p):
-    pp = Path(p)
-    return (pp.parent.name, pp.name)  # ("C00", "1055880.jpg")
 
 
 def main():

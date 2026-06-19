@@ -1,20 +1,41 @@
-# Commands — Maritime OOD Detection
+# Commands — Maritime / ShipSpotting + Infiray OOD Detection
 
-End-to-end pipeline for SubspaceAD on the maritime vessel datasets, across two SSL checkpoints
-(Base: RGB+IR · Continual: degraded-IR) and three data conditions (original / degraded / pooled).
-Scripts live in `scripts/maritime/`; run from repo root (`/home/hcchua/SubspaceAD`).
-Results land in `results_maritime/` (see its `README.md`); feature caches in `/data/hanchong/subspacead_cache/`.
+SubspaceAD across two SSL checkpoints (Base: RGB+IR · Continual: IR+degradation), the ShipSpotting
+(maritime vessel) dataset (original / degraded / pooled), the Infiray IR dataset (in-domain + cross-domain),
+and off-the-shelf HF DINOv2 (ViT-S/B/L). Scripts live in `scripts/maritime/`; run from the repo root
+(`/home/hcchua/SubspaceAD`). Results land in `results_maritime/` (see its `README.md`); feature caches in
+`/data/hanchong/subspacead_cache/`.
 
 ## TL;DR — run everything
 
 ```bash
-bash scripts/maritime/run_all.sh
+bash scripts/maritime/run.sh all
 ```
 
-`run_all.sh` builds the 3 missing caches (`ir_degraded`, `ir_continual`, `ir_degraded_continual`)
-on GPU 0/1/2 while the A3 pooled grid runs on GPU 3, then drains all remaining grids through a
-4-GPU work queue, then aggregates to `results_maritime/grid_summary_all.csv`. ~2–3 h cold.
-Already-built caches are reused, so re-runs are grid-only (minutes).
+`run.sh` chains the five stages **extract → grid → crossdomain → aggregate → speed**, each across a
+4-GPU work queue. Caches/grids are skip-if-present, so warm re-runs are cheap. Run one stage, or scope
+a stage to one family:
+
+```bash
+bash scripts/maritime/run.sh grid                 # just the grid stage (all families)
+bash scripts/maritime/run.sh grid --only infiray  # just the Infiray grids
+DRY=1 bash scripts/maritime/run.sh all | grep '^DRYCMD: '   # print every command, run nothing
+```
+
+## Architecture (per-stage + manifest)
+
+| File | Role |
+|---|---|
+| `run.sh` | top driver: `run.sh [all\|extract\|grid\|crossdomain\|aggregate\|speed] [--only FAMILY]` |
+| `lib.sh` | sourced: shared env (paths, checkpoints, `SIZES`) + the flock 4-GPU `run_queue` + `DRY=1` support |
+| `manifest.sh` | sourced: the experiment tables — `CACHES`, `GRIDS`, `CROSS` — that every stage loops over |
+| `extract.sh` | build feature caches (`--only local\|fuse\|infiray\|hf`) |
+| `grid.sh` | PCA hyperparameter grids via `anomaly_detection.py` (`--only maritime\|rgbirX\|infiray\|hf`) |
+| `crossdomain.sh` | `cross_grid.py` per detector + `infcross_report.py` (Variant A/B) |
+| `aggregate.sh` | `aggregate.py` (CSV reports) + `eval_balanced.py` |
+| `speed.sh` | `bench_speed.py` |
+
+Every stage honors `DRY=1` (echoes `DRYCMD: <cmd>` instead of running) and `--only FAMILY`.
 
 ---
 
@@ -25,108 +46,83 @@ Already-built caches are reused, so re-runs are grid-only (minutes).
 | Python | `/data/hanchong/miniconda3/envs/subspacead/bin/python` |
 | Arch | DINOv2 ViT-L/16 (24 layers, 1024-d), CLS token, 224 px |
 | Normalization | mean `(0.5,0.5,0.5)`, std `(0.5,0.5,0.5)` |
-| DINOv2 config | `…/Maritime-Vessel-Recognition/submodules/dinov2/dinov2/configs/train/vitl16_short.yaml` |
-| DINOv2 submodule | `…/Maritime-Vessel-Recognition/submodules/dinov2` |
-| Cache dir | `/data/hanchong/subspacead_cache/` (override with `CACHE_DIR=…`) |
+| DINOv2 config / submodule | `…/Maritime-Vessel-Recognition/submodules/dinov2/dinov2/configs/train/vitl16_short.yaml` / `…/submodules/dinov2` |
+| Cache dir | `/data/hanchong/subspacead_cache/` |
 
 ### Backbones
-| Tag | `--pretrained_weights` |
+| Tag | checkpoint |
 |---|---|
-| orig | `…/artifacts-dinov2-all/pretraining/ViT-L-16/eval/training_2348399/teacher_checkpoint.pth` |
+| orig (Base) | `…/artifacts-dinov2-all/pretraining/ViT-L-16/eval/training_2348399/teacher_checkpoint.pth` |
 | continual | `…/artifacts-dinov2-all/pretraining/ViT-L-16-Continual-IR/eval/training_51199/teacher_checkpoint.pth` |
 
 ### Dataset roots
-| Dataset | `--data_root` |
+| Dataset | root |
 |---|---|
 | RGB (original) | `/data/hanchong/images-splitted-3` |
 | IR (original) | `/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein` |
 | IR (degraded) | `/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein-degraded` |
+| Infiray | `/data/hanchong/other-infrared-datasets/processed-data/红外船舶数据库` (val=root A) + `…_Reversed` (test=root B) |
 
-### Caches → experiments
-| Cache | dataset / backbone | feeds |
+### Caches (all defined in `manifest.sh::CACHES`, built by `extract.sh`)
+| Cache | builder | content |
 |---|---|---|
-| `rgb.npz` | RGB original / orig | RGB baseline, A3 pool |
-| `ir.npz` | IR original / orig | IR baseline, A1 fit, A3 pool |
-| `ir_degraded.npz` | IR degraded / orig | A1 eval, A2 |
-| `rgbir_pool.npz` | RGB∪IR original / orig | A3 |
-| `ir_continual.npz` | IR original / continual | B0, B1 fit |
-| `ir_degraded_continual.npz` | IR degraded / continual | B1 eval, B2 |
+| `rgb.npz`, `ir.npz`, `ir_degraded.npz`, `ir_continual.npz`, `ir_degraded_continual.npz` | `local` (`dump_chain.sh`) | ShipSpotting single-modality, 5 fit sizes + val/test |
+| `rgbir_pool.npz` | `fuse` | RGB∪IR original (sample-pooled) |
+| `rgbir_pool_origRGB_degIR.npz` | `fuse` | RGB-original ∪ IR-degraded |
+| `infiray_{base,continual}_{raw,enhwo,enhw}.npz` | `infiray` (`extract_infiray.py`) | Infiray fit(train)/val(root A)/test(root B) |
+| `hf_{s,b,l}_degraded.npz` | `hf` (`extract_features_hf.py`) | off-the-shelf DINOv2 on degraded IR |
 
 ---
 
-## Step 1 — Feature extraction (`dump_chain.sh`)
-
-Generic one-cache-per-call driver, parameterized by env vars: `DATA_ROOT`, `OUT_NAME`, `CKPT`
-(default orig), `GPU` (default 0), `CHECK_DEGRADED` (1 = assert degraded root complete first).
+## Stages
 
 ```bash
-# original IR, continual backbone  → ir_continual.npz  (GPU 1)
+bash scripts/maritime/run.sh extract       # build any missing caches (local→dump_chain, fuse, infiray, hf)
+bash scripts/maritime/run.sh grid          # 9 ShipSpotting + 18 Infiray + 3 HF grids (anomaly_detection.py)
+bash scripts/maritime/run.sh crossdomain   # cross_grid.py × 8 detectors → infcross_report.py (Variant A/B)
+bash scripts/maritime/run.sh aggregate     # aggregate.py CSVs + eval_balanced.py (balanced_test.csv)
+bash scripts/maritime/run.sh speed         # bench_speed.py (speed_bench.csv)
+```
+
+Outputs (all under `results_maritime/`): per-config `grids/grid_<exp>_<size>_<cfg>/metrics.json`;
+summary CSVs in `tables/` — `grid_summary_all.csv`, `best_per_experiment.csv`, `balanced_test.csv`,
+`infiray_grid_best.csv`, `infcross_{maritimecfg,valselect}.csv`, `hf_grid_best.csv`, `speed_bench.csv`.
+
+### Running the underlying scripts directly (for one-offs)
+
+```bash
+# one local cache (env-var driven; extract.sh calls this for the 5 ShipSpotting caches)
 DATA_ROOT=/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein \
-CKPT=…/ViT-L-16-Continual-IR/eval/training_51199/teacher_checkpoint.pth \
-OUT_NAME=ir_continual.npz GPU=1 bash scripts/maritime/dump_chain.sh
+  CKPT=…/ViT-L-16-Continual-IR/eval/training_51199/teacher_checkpoint.pth \
+  OUT_NAME=ir_continual.npz GPU=1 bash scripts/maritime/dump_chain.sh        # +CHECK_DEGRADED=1 for degraded roots
 
-# degraded IR, orig backbone    → ir_degraded.npz   (GPU 0, gated on degraded set being complete)
-DATA_ROOT=/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein-degraded \
-OUT_NAME=ir_degraded.npz GPU=0 CHECK_DEGRADED=1 bash scripts/maritime/dump_chain.sh
+python scripts/maritime/fuse_pool_features.py                                # rgb.npz + ir.npz → rgbir_pool.npz
 
-# degraded IR, continual backbone → ir_degraded_continual.npz  (GPU 2)
-DATA_ROOT=/data/hanchong/maritime-vessel-dataset-infrared-flux2-klein-degraded \
-CKPT=…/ViT-L-16-Continual-IR/eval/training_51199/teacher_checkpoint.pth \
-OUT_NAME=ir_degraded_continual.npz GPU=2 CHECK_DEGRADED=1 bash scripts/maritime/dump_chain.sh
-```
-
-Each call runs the 5 fit sizes incrementally (100→10000) + val/test once, all 24 CLS layers.
-The original `rgb.npz` / `ir.npz` use the same driver with `CKPT`=orig on the original roots —
-`run_all.sh` builds all six caches (skip-if-present) automatically.
-
-## Step 2 — Pool for fusion (`fuse_pool_features.py`)
-
-```bash
-python scripts/maritime/fuse_pool_features.py        # rgb.npz + ir.npz → rgbir_pool.npz (numpy merge, no GPU)
-```
-
-## Step 3 — Hyperparameter grid (`anomaly_detection.py`)
-
-One experiment = 5 sizes × 1920 configs. `--eval_cache_file` makes fit and eval come from
-different caches (cross-domain). Example, A1 (fit original IR, eval degraded IR), size 5000, GPU 0:
-
-```bash
+# one PCA grid (5 axes × sizes); --eval_cache_file for cross-domain (e.g. orig→degraded)
 CUDA_VISIBLE_DEVICES=0 python scripts/maritime/anomaly_detection.py \
-  --feature_cache_file /data/hanchong/subspacead_cache/ir.npz \
-  --eval_cache_file    /data/hanchong/subspacead_cache/ir_degraded.npz \
-  --data_root /data/hanchong/maritime-vessel-dataset-infrared-flux2-klein \
+  --feature_cache_file …/ir.npz --eval_cache_file …/ir_degraded.npz \
+  --data_root …/maritime-vessel-dataset-infrared-flux2-klein \
   --in_dist_subset In-distribution_5000perCat --size 5000 \
-  --out_prefix grid_irX_5000_ \
-  --results_root /home/hcchua/SubspaceAD/results_maritime/grids
+  --ood_subset Out-of-distribution --out_prefix grid_irX_5000_ \
+  --results_root results_maritime/grids
+
+# aggregate (merged tool): val-best per group, or --all (every config), or --detail (axis slices)
+python scripts/maritime/aggregate.py --pattern 'grid_*' --all --csv results_maritime/tables/grid_summary_all.csv
+python scripts/maritime/aggregate.py --pattern 'grid_infiray_*' --csv results_maritime/tables/infiray_grid_best.csv
+python scripts/maritime/aggregate.py --pattern 'grid_ir_*' --detail        # per-axis report to stdout
+
+python scripts/maritime/eval_balanced.py     # 400+400 × 20-seed balanced metrics → tables/balanced_test.csv
 ```
 
-Omit `--eval_cache_file` for same-cache experiments (A2, A3, B0, B2). `out_prefix` tags:
-`grid_rgb_`, `grid_ir_`, `grid_irX_`, `grid_irdeg_`, `grid_rgbir_`, `grid_ircont_`, `grid_irXcont_`,
-`grid_irdegcont_`. In practice use `run_all.sh` — it issues all of these across 4 GPUs.
-
-## Step 4 — Aggregate (`aggregate_results.py`)
-
-```bash
-python scripts/maritime/aggregate_results.py \
-  --results_root results_maritime/grids \
-  --csv results_maritime/grid_summary_all.csv
-```
-
-Prints val-best per experiment + per-axis ablation slices; writes the master CSV. Default
-`--results_root` is already `results_maritime/grids`.
-
-## Step 5 — Balanced-test metrics (`eval_balanced.py`, optional)
-
-```bash
-python scripts/maritime/eval_balanced.py             # 400 ID + 400 OOD × 20 seeds, val-best configs
-```
+Shared Python primitives (`make_layer_configs`, `aggregate_features`, `compute_metrics`, `_chunked`,
+`extract_per_layer_cls`, `balanced_metrics`, …) live in `scripts/maritime/_common.py`.
 
 ---
 
 ## Notes
 
-- **GPUs**: 4× A100-40GB. `run_all.sh` uses all four (extractions on 0/1/2, A3 on 3; then a 4-GPU queue).
-- **Outputs**: per-config `results_maritime/grids/grid_<exp>_<size>_<config>/metrics.json`; logs
-  `results_maritime/grids/grid_<exp>_<size>_stdout.log`; summaries `results_maritime/*.csv`.
-- **Resumable**: extraction is incremental (cache append); grids are idempotent (re-write per config).
-- **Disk**: caches total ~113 GB on `/data` (keep them off `/`). Re-extraction is the only expensive step.
+- **GPUs**: 4× A100-40GB. Every stage drains its work through the shared 4-GPU `run_queue` in `lib.sh`.
+  Run one stage at a time (don't oversubscribe GPUs across stages).
+- **Resumable**: extraction is incremental (cache append) + skip-if-present; grids are idempotent (re-write per config).
+- **Disk**: ShipSpotting caches ~17 GB each (pooled ~33 GB); keep them on `/data`. Re-extraction is the only expensive step.
+- **Dry run**: `DRY=1 bash scripts/maritime/run.sh <stage>` prints the exact command set without executing — useful to preview or diff.

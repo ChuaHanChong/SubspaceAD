@@ -10,7 +10,7 @@ the val-derived Youden threshold fixed, and reports:
 
 Configs are read from best_per_experiment.csv (no hardcoding); fit and eval caches
 are resolved per experiment so cross-domain runs (irX, irXcont) use the right pair.
-Results print to stdout and are written to results_maritime/balanced_test.csv.
+Results print to stdout and are written to results_maritime/tables/balanced_test.csv.
 """
 import csv
 import sys
@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from subspacead.core.pca import PCAModel
 from subspacead.post_process.scoring import calculate_anomaly_scores
-from anomaly_detection import aggregate_features, _chunked, compute_metrics, LAYER_CONFIGS
+from _common import aggregate_features, _chunked, compute_metrics, LAYER_CONFIGS, balanced_metrics
 
 CACHE = Path("/data/hanchong/subspacead_cache")
 RESULTS = Path("/home/hcchua/SubspaceAD/results_maritime")
@@ -67,19 +67,8 @@ def evaluate(tag, dataset, size, layers, agg, ev, score, drop_k, n_seeds=20):
     thr = val_m["threshold"]
     imb = compute_metrics(test_labels, test_scores, threshold=thr)
 
-    id_idx = np.where(test_labels == 0)[0]
-    ood_idx = np.where(test_labels == 1)[0]
-    n_min = min(len(id_idx), len(ood_idx))
-    keys = ["auroc", "aupr", "fpr_at_95tpr", "accuracy", "macro_f1",
-            "precision_ood", "recall_ood", "f1_ood"]
-    acc = {k: [] for k in keys}
-    for seed in range(n_seeds):
-        rng = np.random.default_rng(seed)
-        idx = np.concatenate([rng.choice(id_idx, size=n_min, replace=False), ood_idx])
-        m = compute_metrics(test_labels[idx], test_scores[idx], threshold=thr)
-        for k in keys:
-            acc[k].append(m[k])
-    bal = {k: (float(np.mean(acc[k])), float(np.std(acc[k]))) for k in keys}
+    n_min = min(int((test_labels == 0).sum()), int((test_labels == 1).sum()))
+    bal = balanced_metrics(test_labels, test_scores, thr, n_seeds=n_seeds)
 
     print(f"\n=== {tag}  (size={size} {','.join(map(str,layers))} {agg} EV={ev} {score} dk={drop_k}) ===")
     print(f"  IMBALANCED ({int((test_labels==0).sum())} ID + {int((test_labels==1).sum())} OOD): "
@@ -104,7 +93,7 @@ def evaluate(tag, dataset, size, layers, agg, ev, score, drop_k, n_seeds=20):
 
 
 def main():
-    best = list(csv.DictReader(open(RESULTS / "best_per_experiment.csv")))
+    best = list(csv.DictReader(open(RESULTS / "tables" / "best_per_experiment.csv")))
     rows = []
     for r in best:
         layers = LAYER_CONFIGS[r["layer"]]
@@ -115,7 +104,8 @@ def main():
         ))
 
     cols = list(rows[0].keys())
-    out = RESULTS / "balanced_test.csv"
+    (RESULTS / "tables").mkdir(parents=True, exist_ok=True)
+    out = RESULTS / "tables" / "balanced_test.csv"
     with open(out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()

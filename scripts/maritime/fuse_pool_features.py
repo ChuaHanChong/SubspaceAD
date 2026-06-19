@@ -6,7 +6,7 @@ layer count are unchanged; the pooled dataset simply has 2× the samples. PCA is
 then fit on the union, and every RGB and IR image is scored independently.
 
 The output .npz has the exact same schema as a single-dataset cache, so
-anomaly_detection.py / run_all.sh consume it with no changes.
+anomaly_detection.py / the grid stage consume it with no changes.
 
   fit_cls          = [rgb_fit ; ir_fit]              # [2N, 24, D]
   val/test_cls     = [rgb_eval ; ir_eval]            # rows pooled, labels too

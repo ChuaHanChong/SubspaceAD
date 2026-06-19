@@ -16,109 +16,16 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import torch
-from sklearn.metrics import (
-    average_precision_score, classification_report, confusion_matrix,
-    roc_auc_score, roc_curve,
-)
 
 from subspacead.core.pca import PCAModel
 from subspacead.data.maritime import list_fit_paths, resolve_roots
 from subspacead.post_process.scoring import calculate_anomaly_scores
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Paper-only axes
-LAYER_CONFIGS: dict[str, list[int]] = {
-    "L1":   [-1],
-    "L2":   [-1, -2],
-    "L4":   [-1, -2, -3, -4],
-    "L6":   [-1, -2, -3, -4, -5, -6],
-    "L8":   [-1, -2, -3, -4, -5, -6, -7, -8],
-    "L12":  [-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12],
-    "L18":  [-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12,
-            -13, -14, -15, -16, -17, -18],
-    "Lmid": [-12, -13, -14, -15, -16, -17, -18],   # paper default
-}
-AGG_METHODS = ["mean", "concat"]
-AGG_SHORT = {"mean": "m", "concat": "c"}
-EVS = [0.5, 0.7, 0.9, 0.95, 0.99, 0.999]
-SCORE_METHODS = ["reconstruction", "mahalanobis", "cosine", "euclidean"]
-SCORE_SHORT = {"reconstruction": "rec", "mahalanobis": "mah",
-               "cosine": "cos", "euclidean": "euc"}
-DROP_KS = [0, 5, 20, 50, 100]
-
-
-def _fpr_at_tpr(y_true, y_score, target):
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    idx = np.searchsorted(tpr, target, side="left")
-    return float(fpr[idx]) if idx < len(fpr) else float("nan")
-
-
-def _youden_threshold(y_true, y_score):
-    """Threshold maximizing Youden's J = TPR - FPR."""
-    fpr, tpr, thresholds = roc_curve(y_true, y_score)
-    return float(thresholds[np.argmax(tpr - fpr)])
-
-
-def compute_metrics(y_true, y_score, threshold=None):
-    """Threshold-free (AUROC/AUPR/FPR@95) + classification report at threshold.
-
-    If threshold is None, derive via Youden's J on this split. Caller should
-    pass the VAL-derived threshold when scoring TEST to avoid leakage.
-    """
-    if threshold is None:
-        threshold = _youden_threshold(y_true, y_score)
-    y_pred = (y_score >= threshold).astype(int)
-    rep = classification_report(
-        y_true, y_pred, target_names=["id", "ood"],
-        output_dict=True, zero_division=0,
-    )
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-    return {
-        "auroc": float(roc_auc_score(y_true, y_score)),
-        "aupr": float(average_precision_score(y_true, y_score)),
-        "fpr_at_95tpr": _fpr_at_tpr(y_true, y_score, 0.95),
-        "threshold": threshold,
-        "accuracy": float(rep["accuracy"]),
-        "precision_id":  float(rep["id"]["precision"]),
-        "recall_id":     float(rep["id"]["recall"]),
-        "f1_id":         float(rep["id"]["f1-score"]),
-        "precision_ood": float(rep["ood"]["precision"]),
-        "recall_ood":    float(rep["ood"]["recall"]),
-        "f1_ood":        float(rep["ood"]["f1-score"]),
-        "macro_f1":      float(rep["macro avg"]["f1-score"]),
-        "weighted_f1":   float(rep["weighted avg"]["f1-score"]),
-        "confusion": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
-        "score_stats": {
-            "n_in_dist": int((y_true == 0).sum()),
-            "n_ood": int((y_true == 1).sum()),
-            "in_dist_score_mean": float(np.mean(y_score[y_true == 0])),
-            "ood_score_mean": float(np.mean(y_score[y_true == 1])),
-            "in_dist_score_std": float(np.std(y_score[y_true == 0])),
-            "ood_score_std": float(np.std(y_score[y_true == 1])),
-        },
-    }
-
-
-def aggregate_features(cls_features, positives_sorted, target_layers, depth, agg_method):
-    target_pos = [li if li >= 0 else depth + li for li in target_layers]
-    axis_indices = [positives_sorted.index(p) for p in target_pos]
-    selected = cls_features[:, axis_indices, :]  # [N, n_target, D]
-    if agg_method == "mean":
-        return selected.mean(axis=1)
-    if agg_method == "concat":
-        N, n_target, D = selected.shape
-        return selected.reshape(N, n_target * D)
-    raise ValueError(f"unknown agg_method: {agg_method}")
-
-
-def _chunked(arr, chunk: int = 1024):
-    """Wrap a numpy array as a (re-callable) generator of chunks for PCAModel.fit."""
-    def gen():
-        for i in range(0, len(arr), chunk):
-            yield arr[i : i + chunk]
-    return gen
+from _common import (
+    make_layer_configs, AGG_METHODS, AGG_SHORT, EVS,
+    SCORE_METHODS, SCORE_SHORT, DROP_KS, compute_metrics, aggregate_features,
+    _chunked, _sig,
+)
 
 
 def main():
@@ -137,9 +44,9 @@ def main():
     p.add_argument("--in_dist_subset", required=True,
                    help="subset to use for fit (e.g. In-distribution_5000perCat). "
                         "Its train paths must be a subset of those in the cache.")
-    p.add_argument("--size", type=int, required=True,
-                   help="fit-subset size per class (e.g. 5000). Used to look up "
-                        "subset_idx_{size} in the cache.")
+    p.add_argument("--size", required=True,
+                   help="fit-subset size per class (e.g. 5000) → subset_idx_{size}; "
+                        "or 'all' → subset_idx_idonly (or every fit row).")
     p.add_argument("--ood_subset", default="Out-of-distribution")
     p.add_argument("--out_prefix", required=True,
                    help="e.g. 'grid_rgb_5000_' — written to results_root/{prefix}{tag}/")
@@ -158,7 +65,7 @@ def main():
     # fit on one dataset and evaluate on another (cross-domain).
     d = np.load(args.feature_cache_file, allow_pickle=False)
     fit_cls_full   = d["fit_cls"]                 # [N_max_fit, 24, D]
-    fit_paths_full = d["fit_paths"].astype(str)   # [N_max_fit]
+    fit_paths_full = d["fit_paths"].astype(str) if "fit_paths" in d.files else None  # path-match fallback only
     depth = int(d["depth"])
     positives_sorted = d["positives_sorted"].tolist()
 
@@ -187,18 +94,23 @@ def main():
 
     # Prefer the precomputed subset_idx_{size} array in the cache; fall back to
     # path-matching by (class_dir, basename) if not present.
-    idx_key = f"subset_idx_{args.size}"
-
-    if idx_key in d.files:
+    # --size all → fit on subset_idx_idonly (e.g. Infiray ID categories) or every fit row.
+    if args.size == "all":
+        fit_idx = (d["subset_idx_idonly"] if "subset_idx_idonly" in d.files
+                   else np.arange(fit_cls_full.shape[0], dtype=np.int64))
+        logging.info(f"--size all: fitting on {len(fit_idx)} rows")
+    elif (idx_key := f"subset_idx_{args.size}") in d.files:
         fit_idx = d[idx_key]
         logging.info(f"using precomputed {idx_key}: {len(fit_idx)} indices")
     else:
         logging.info(f"{idx_key} not in cache; falling back to path-matching")
+        if fit_paths_full is None:
+            raise RuntimeError(
+                f"cache has neither subset_idx_{args.size} nor fit_paths; "
+                f"pass --size all or a size present in the cache"
+            )
         in_dist_root, _ = resolve_roots(Path(args.data_root), args.in_dist_subset, args.ood_subset)
         subset_paths = list_fit_paths(in_dist_root, seed=42)
-        def _sig(p):
-            pp = Path(p)
-            return (pp.parent.name, pp.name)
         sig_to_idx = {_sig(p): i for i, p in enumerate(fit_paths_full)}
         missing = [p for p in subset_paths if _sig(p) not in sig_to_idx]
         if missing:
@@ -215,12 +127,14 @@ def main():
         f"val={val_cls.shape}, test={test_cls.shape}"
     )
 
-    n_total = (len(LAYER_CONFIGS) * len(AGG_METHODS) * len(EVS)
+    layer_configs = make_layer_configs(depth)   # depth-aware (12-layer ViT-S/B vs 24-layer ViT-L)
+    logging.info(f"depth={depth} → layer configs: {list(layer_configs)}")
+    n_total = (len(layer_configs) * len(AGG_METHODS) * len(EVS)
                * len(SCORE_METHODS) * len(DROP_KS))
     n_done = 0
 
     n_fit = fit_cls.shape[0]
-    for layer_tag, layers in LAYER_CONFIGS.items():
+    for layer_tag, layers in layer_configs.items():
         for agg in AGG_METHODS:
             # Skip concat configs where N_fit < D (PCA would be rank-deficient).
             if agg == "concat":
