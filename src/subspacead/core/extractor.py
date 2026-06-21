@@ -146,9 +146,14 @@ class FeatureExtractor:
         dino_saliency_layer: int = 0,
         token_type: str = "patch",
     ):
-        """Returns (tokens, (h_p, w_p), saliency).
+        """
+        Extracts, aggregates features, and computes saliency from a batch of images.
 
-        token_type: "patch" → spatial grid; "cls" → [B, 1, 1, C], zero saliency.
+        Returns:
+            - fused_tokens (np.ndarray): The aggregated patch features.
+            - grid_size (tuple): The (height, width) of the patch grid.
+            - saliency_mask (np.ndarray): The DINO saliency mask.
+            - token_type: "patch" → spatial grid; "cls" → [B, 1, 1, C], zero saliency.
         """
 
         # 1. Preprocessing

@@ -1,42 +1,61 @@
 #!/bin/bash
-# run.sh — top-level driver for the maritime OOD study.
+# run.sh — minimal SubspaceAD image-level OOD example.
 #
-#   run.sh [all|extract|grid|crossdomain|aggregate|speed] [--only FAMILY]
+# One generic pipeline: extract DINOv2 CLS features -> PCA hyperparameter grid -> pick the
+# val-best. A dataset = ID/OOD image folders; local vs off-the-shelf = a --backbone switch.
+# Edit the variables below or pass them as env.
 #
-# 'all' (default) chains the stages in order:
-#   extract -> grid -> crossdomain -> aggregate -> speed
-# Any single stage name runs just that stage. --only FAMILY is forwarded to the
-# stage(s). DRY=1 is honored end-to-end (each stage echoes 'DRYCMD: ...').
-#
-# Examples:
-#   bash scripts/maritime/run.sh all
-#   bash scripts/maritime/run.sh grid --only infiray
-#   DRY=1 bash scripts/maritime/run.sh all | grep '^DRYCMD: '
+#   bash scripts/maritime/run.sh
+#   NAME=hf BACKBONE=hf HF_MODEL=facebook/dinov2-small ID_FIT=... OOD_TEST=... bash scripts/maritime/run.sh
 
-set -uo pipefail
-HERE="$(dirname "$(readlink -f "$0")")"
+set -euo pipefail
+cd "$(cd "$(dirname "$0")/../.." && pwd)"        # repo root
 
-STAGE=${1:-all}
-[ $# -gt 0 ] && shift   # remaining args (e.g. --only FAMILY) forwarded to stages
+PY="${PY:-python}"
+NAME="${NAME:-example}"                           # output prefix / cache name
 
-run_stage() {  # stage-name [args...]
-  echo "==================== STAGE: $1 ===================="
-  bash "$HERE/$1.sh" "${@:2}"
-}
+# ---- backbone: local DINOv2 checkpoint OR off-the-shelf HF ----
+BACKBONE="${BACKBONE:-local}"                     # local | hf
+CKPT="${CKPT:-/path/to/dinov2_teacher_checkpoint.pth}"
+DINO_CONFIG="${DINO_CONFIG:-/path/to/dinov2/configs/train/vitl16_short.yaml}"
+DINO_SUBMOD="${DINO_SUBMOD:-/path/to/dinov2}"
+HF_MODEL="${HF_MODEL:-facebook/dinov2-small}"
+# local backbone DINOv2 student opts (edit if your checkpoint is a different arch)
+LOCAL_OPTS="${LOCAL_OPTS:-student.arch=vit_large student.block_chunks=4 student.num_register_tokens=4 student.interpolate_antialias=true student.interpolate_offset=0.0}"
 
-case "$STAGE" in
-  all)
-    run_stage extract "$@"
-    run_stage grid "$@"
-    run_stage crossdomain "$@"
-    run_stage aggregate "$@"
-    run_stage speed "$@"
-    ;;
-  extract|grid|crossdomain|aggregate|speed)
-    run_stage "$STAGE" "$@"
-    ;;
-  *)
-    echo "run.sh: unknown stage '$STAGE' (all|extract|grid|crossdomain|aggregate|speed)" >&2
-    exit 2
-    ;;
-esac
+# ---- dataset: one image folder per split (ID = normal, OOD = anomaly) ----
+ID_FIT="${ID_FIT:-/path/to/id/fit}"
+ID_VAL="${ID_VAL:-/path/to/id/val}"
+ID_TEST="${ID_TEST:-/path/to/id/test}"
+OOD_VAL="${OOD_VAL:-/path/to/ood/val}"
+OOD_TEST="${OOD_TEST:-/path/to/ood/test}"
+
+CACHE="${CACHE:-cache}"             # feature .npz output dir
+GRIDS="${GRIDS:-results/grids}"     # per-config metrics.json output dir
+TABLES="${TABLES:-results/tables}"  # val-best CSV output dir
+mkdir -p "$CACHE" "$GRIDS" "$TABLES"
+
+CACHE_FILE="$CACHE/$NAME.npz"
+
+# 1) extract features once (ID fit + ID/OOD val/test)
+if [ "$BACKBONE" = "hf" ]; then
+  "$PY" scripts/maritime/extract_features.py --backbone hf --hf_model "$HF_MODEL" \
+    --id_fit "$ID_FIT" --id_val "$ID_VAL" --id_test "$ID_TEST" \
+    --ood_val "$OOD_VAL" --ood_test "$OOD_TEST" --out_cache_file "$CACHE_FILE"
+else
+  # shellcheck disable=SC2086  # LOCAL_OPTS is intentionally word-split into separate args
+  "$PY" scripts/maritime/extract_features.py --backbone local \
+    --ckpt "$CKPT" --config "$DINO_CONFIG" --submodule "$DINO_SUBMOD" \
+    --id_fit "$ID_FIT" --id_val "$ID_VAL" --id_test "$ID_TEST" \
+    --ood_val "$OOD_VAL" --ood_test "$OOD_TEST" --out_cache_file "$CACHE_FILE" \
+    $LOCAL_OPTS
+fi
+
+# 2) hyperparameter grid (PCA fit on all id_fit features)
+"$PY" scripts/maritime/anomaly_detection.py \
+  --feature_cache_file "$CACHE_FILE" \
+  --out_prefix "grid_${NAME}_" --results_root "$GRIDS"
+
+# 3) pick the val-best config
+"$PY" scripts/maritime/aggregate.py --pattern "grid_${NAME}_*" \
+  --results_root "$GRIDS" --csv "$TABLES/${NAME}_best.csv"

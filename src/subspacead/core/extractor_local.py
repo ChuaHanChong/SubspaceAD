@@ -30,8 +30,8 @@ class LocalDinoV2Extractor:
         self,
         config_file: str,
         pretrained_weights: str,
+        submodule_path: str,
         opts: list[str] | None = None,
-        submodule_path: str = "/home/hcchua/Maritime-Vessel-Recognition/submodules/dinov2",
         norm_mean: tuple[float, float, float] = _DEFAULT_NORM_MEAN,
         norm_std: tuple[float, float, float] = _DEFAULT_NORM_STD,
     ):
